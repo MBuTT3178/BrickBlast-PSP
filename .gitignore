@@ -4,6 +4,7 @@
 *.prx
 PARAM.SFO
 .block_blast_high
+*.zip
 
 # Python artifacts
 __pycache__/

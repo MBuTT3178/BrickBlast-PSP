@@ -1,0 +1,16 @@
+# Build artifacts
+*.o
+*.elf
+*.prx
+PARAM.SFO
+.block_blast_high
+
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Local scratch directory
+PSP/
+
+pcm_sounds/
+real_sounds/

@@ -487,6 +487,7 @@ static void init_shapes(void) {
 
 #define REVIVE_BASE_COST 100
 #define REVIVE_STEP_COST 50
+#define BOMB_COST        300
 
 typedef struct {
     u8  grid[GRID_N][GRID_N];
@@ -733,17 +734,19 @@ static void generate_pieces(Game *g) {
         }
     }
 
-    int is_tight    = (occupied >= 26); /* > 40% full */
-    int is_crowded  = (occupied >= 36); /* > 56% full: emergency pity assist */
+    int is_tight    = (occupied >= 24); /* > 37% full */
+    int is_crowded  = (occupied >= 32); /* > 50% full: emergency small pieces only */
 
     /* Tier pools */
-    static const int small_pool[] = {0, 1, 2, 3, 4, 13, 14, 15, 16};
-    static const int med_pool[]   = {5, 6, 9, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
-    static const int large_pool[] = {7, 8, 10, 11, 12, 17, 18, 19, 20, 33};
+    static const int small_pool[]  = {0, 1, 2, 3, 4, 13, 14, 15, 16}; /* 1x1, 2-bars, 3-bars, small corners */
+    static const int simple_pool[] = {0, 1, 2, 3, 4, 9, 13, 14, 15, 16, 29, 30, 31, 32}; /* adds 2x2 and simple L/J */
+    static const int med_pool[]    = {5, 6, 9, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
+    static const int large_pool[]  = {7, 8, 10, 11, 12, 17, 18, 19, 20, 33};
 
-    int n_small = (int)(sizeof(small_pool) / sizeof(small_pool[0]));
-    int n_med   = (int)(sizeof(med_pool) / sizeof(med_pool[0]));
-    int n_large = (int)(sizeof(large_pool) / sizeof(large_pool[0]));
+    int n_small  = (int)(sizeof(small_pool) / sizeof(small_pool[0]));
+    int n_simple = (int)(sizeof(simple_pool) / sizeof(simple_pool[0]));
+    int n_med    = (int)(sizeof(med_pool) / sizeof(med_pool[0]));
+    int n_large  = (int)(sizeof(large_pool) / sizeof(large_pool[0]));
 
     /* Slot 0: Clear-enabler assist (streak feeder) or guaranteed small filler */
     int s0 = -1;
@@ -769,14 +772,16 @@ static void generate_pieces(Game *g) {
         if (s0 == -1) s0 = small_pool[rng_range(n_small)];
     }
 
-    /* Slot 1: Medium standard piece (tetromino, 2x2, or 4-line) */
+    /* Slot 1: Standard piece (small pool if crowded, simple pool if tight) */
     int s1 = -1;
     for (int tries = 0; tries < 25; tries++) {
         int candidate;
         if (is_crowded) {
             candidate = small_pool[rng_range(n_small)];
+        } else if (is_tight) {
+            candidate = simple_pool[rng_range(n_simple)];
         } else {
-            candidate = (rng_range(100) < 65) ? med_pool[rng_range(n_med)] : small_pool[rng_range(n_small)];
+            candidate = (rng_range(100) < 65) ? med_pool[rng_range(n_med)] : simple_pool[rng_range(n_simple)];
         }
         if (shape_can_fit(g, candidate) && candidate != s0) {
             s1 = candidate;
@@ -785,10 +790,9 @@ static void generate_pieces(Game *g) {
     }
     if (s1 == -1) s1 = small_pool[rng_range(n_small)];
 
-    /* Slot 2: Situational (Large when board is open, banned when crowded) */
+    /* Slot 2: Situational (strictly small when crowded or tight) */
     int s2 = -1;
     if (is_crowded) {
-        /* High density: strictly ban large chunks, pick whatever fits */
         for (int tries = 0; tries < 25; tries++) {
             int candidate = small_pool[rng_range(n_small)];
             if (shape_can_fit(g, candidate) && candidate != s0 && candidate != s1) {
@@ -798,17 +802,15 @@ static void generate_pieces(Game *g) {
         }
         if (s2 == -1) s2 = small_pool[0]; /* 1x1 dot emergency fallback */
     } else if (is_tight) {
-        /* Moderate density: ban 3x3 and 5-lines */
         for (int tries = 0; tries < 25; tries++) {
-            int candidate = (rng_range(100) < 50) ? small_pool[rng_range(n_small)] : med_pool[rng_range(n_med)];
-            if (shape_can_fit(g, candidate)) {
+            int candidate = simple_pool[rng_range(n_simple)];
+            if (shape_can_fit(g, candidate) && candidate != s0 && candidate != s1) {
                 s2 = candidate;
                 break;
             }
         }
         if (s2 == -1) s2 = small_pool[rng_range(n_small)];
     } else {
-        /* Open board: 40% chance for large chunk */
         if (rng_range(100) < 40) {
             s2 = large_pool[rng_range(n_large)];
         } else {
@@ -858,9 +860,6 @@ static int any_piece_fits(const Game *g) {
             }
         }
     }
-    if (g->hammer_charges > 0 || g->coins >= 20) {
-        return 1;
-    }
     return 0;
 }
 
@@ -888,7 +887,7 @@ static void game_init(Game *g) {
     g->high_score = best;
     g->cursor_r = 3;
     g->cursor_c = 3;
-    g->hammer_charges = 1;
+    g->hammer_charges = 0;
     generate_pieces(g);
     clamp_cursor(g);
 }
@@ -974,16 +973,12 @@ static void check_clears(Game *g) {
     g->flash_timer = 14;
 
     /* Score calculation: Base + Multi-line clear + Streak multiplier */
-    int old_score = g->score;
     int base_pts = total_lines * 100;
     int multi_pts = (total_lines > 1) ? ((total_lines - 1) * 150) : 0;
     int streak_pts = (g->streak > 1) ? (g->streak * 60) : 0;
     int total_pts = base_pts + multi_pts + streak_pts;
 
     g->score += total_pts;
-    if ((g->score / 400) > (old_score / 400)) {
-        g->hammer_charges++;
-    }
     g->popup_val = total_pts;
     g->popup_timer = 45;
 
@@ -1041,11 +1036,7 @@ static void place_selected_piece(Game *g) {
         g->grid[r][c] = col_idx;
     }
 
-    int old_score = g->score;
     g->score += s->n * 10;
-    if ((g->score / 400) > (old_score / 400)) {
-        g->hammer_charges++;
-    }
     g->pieces[g->sel].used = 1;
     g->hold_locked = 0;
 
@@ -1124,8 +1115,8 @@ static void hold_selected_piece(Game *g) {
 static void execute_hammer_blast(Game *g) {
     if (g->hammer_charges > 0) {
         g->hammer_charges--;
-    } else if (g->coins >= 20) {
-        g->coins -= 20;
+    } else if (g->coins >= BOMB_COST) {
+        g->coins -= BOMB_COST;
         save_data.coins = g->coins;
         save_game_data();
     } else {
@@ -1385,13 +1376,13 @@ static void render_panel(const Game *g) {
         snprintf(chg_buf, sizeof(chg_buf), "FREE x%d", g->hammer_charges);
         draw_str(bomb_x + 18, tool_y + 20, chg_buf, RGB(80, 255, 120), 1);
     } else {
-        draw_str(bomb_x + 14, tool_y + 20, "20 COINS", (g->coins >= 20) ? COL_TEXT_GOLD : COL_ALERT_RED, 1);
+        draw_str(bomb_x + 10, tool_y + 20, "300 COINS", (g->coins >= BOMB_COST) ? COL_TEXT_GOLD : COL_ALERT_RED, 1);
     }
 
     /* Helper hints */
     fill_rect(PANEL_X + 8, PANEL_Y + 186, PANEL_W - 16, 1, COL_BOARD_EDGE);
     draw_str(PANEL_X + 12, PANEL_Y + 192, "D-PAD: MOVE   L/R: SELECT", COL_TEXT_DIM, 1);
-    draw_str(PANEL_X + 12, PANEL_Y + 205, "[X]: DROP   [SQ]: HOLD", COL_TEXT_WHITE, 1);
+    draw_str(PANEL_X + 12, PANEL_Y + 205, "[X]: DROP  [SQ]: HOLD  [^]: BOMB", COL_TEXT_WHITE, 1);
 }
 
 static void render_overlays(const Game *g) {
@@ -1451,40 +1442,58 @@ static void render_overlays(const Game *g) {
     if (g->revive_modal) {
         int cost = get_revive_cost(g);
         int modal_w = 340;
-        int modal_h = 175;
+        int modal_h = 195;
         int mx = (SCR_W - modal_w) / 2;
         int my = (SCR_H - modal_h) / 2;
 
         fill_rect(mx, my, modal_w, modal_h, RGB(14, 22, 54));
         draw_border(mx, my, modal_w, modal_h, 3, RGB(255, 180, 40));
 
-        draw_str(mx + 46, my + 14, "OUT OF MOVES!", RGB(255, 200, 40), 2);
+        draw_str(mx + 75, my + 10, "OUT OF MOVES!", RGB(255, 200, 40), 2);
 
         char stats[64];
-        snprintf(stats, sizeof(stats), "SCORE: %d    STREAK: %d", g->score, g->streak);
-        draw_str(mx + 28, my + 42, stats, COL_TEXT_WHITE, 1);
+        snprintf(stats, sizeof(stats), "SCORE: %d   STREAK: %d   COINS: %d", g->score, g->streak, g->coins);
+        draw_str(mx + 28, my + 34, stats, COL_TEXT_WHITE, 1);
 
-        char revive_info[64];
-        snprintf(revive_info, sizeof(revive_info), "REVIVES USED: %d   WALLET: %d COINS", g->revive_count, g->coins);
-        draw_str(mx + 28, my + 58, revive_info, COL_TEXT_GOLD, 1);
-
+        /* Option 1: Revive */
         if (g->coins >= cost) {
             u32 pulse = ((g->anim_tick / 10) % 2) ? RGB(60, 240, 130) : RGB(40, 190, 100);
-            draw_border(mx + 18, my + 80, modal_w - 36, 40, 2, pulse);
-            fill_rect(mx + 20, my + 82, modal_w - 40, 36, RGB(16, 36, 40));
+            draw_border(mx + 18, my + 52, modal_w - 36, 34, 2, pulse);
+            fill_rect(mx + 20, my + 54, modal_w - 40, 30, RGB(16, 36, 40));
             char btn_txt[64];
             snprintf(btn_txt, sizeof(btn_txt), "[X] REVIVE #%d (%d COINS)", g->revive_count + 1, cost);
-            draw_str(mx + 28, my + 88, btn_txt, pulse, 1);
-            draw_str(mx + 28, my + 104, "CLEARS 4X4 CENTER & RESTOCKS", COL_TEXT_DIM, 1);
+            draw_str(mx + 28, my + 58, btn_txt, pulse, 1);
+            draw_str(mx + 28, my + 72, "CLEARS 4X4 CENTER & RESTOCKS", COL_TEXT_DIM, 1);
         } else {
-            draw_border(mx + 18, my + 80, modal_w - 36, 40, 1, COL_ALERT_RED);
-            fill_rect(mx + 20, my + 82, modal_w - 40, 36, RGB(34, 16, 24));
+            draw_border(mx + 18, my + 52, modal_w - 36, 34, 1, COL_ALERT_RED);
+            fill_rect(mx + 20, my + 54, modal_w - 40, 30, RGB(34, 16, 24));
             char btn_txt[64];
-            snprintf(btn_txt, sizeof(btn_txt), "[X] NEED %d COINS (HAVE %d)", cost, g->coins);
-            draw_str(mx + 28, my + 88, btn_txt, COL_ALERT_RED, 1);
-            draw_str(mx + 28, my + 104, "NOT ENOUGH COINS FOR REVIVE", COL_TEXT_DIM, 1);
+            snprintf(btn_txt, sizeof(btn_txt), "[X] REVIVE (%d COINS - NEED %d)", cost, cost - g->coins);
+            draw_str(mx + 28, my + 58, btn_txt, COL_ALERT_RED, 1);
+            draw_str(mx + 28, my + 72, "NOT ENOUGH COINS FOR REVIVE", COL_TEXT_DIM, 1);
         }
 
+        /* Option 2: Bomb */
+        int by = my + 94;
+        if (g->hammer_charges > 0 || g->coins >= BOMB_COST) {
+            u32 bpulse = ((g->anim_tick / 10) % 2) ? RGB(255, 200, 40) : RGB(220, 160, 30);
+            draw_border(mx + 18, by, modal_w - 36, 34, 2, bpulse);
+            fill_rect(mx + 20, by + 2, modal_w - 40, 30, RGB(40, 30, 16));
+            char b_txt[64];
+            if (g->hammer_charges > 0) snprintf(b_txt, sizeof(b_txt), "[^] USE BOMB (FREE x%d)", g->hammer_charges);
+            else snprintf(b_txt, sizeof(b_txt), "[^] BUY BOMB (%d COINS)", BOMB_COST);
+            draw_str(mx + 28, by + 6, b_txt, bpulse, 1);
+            draw_str(mx + 28, by + 20, "BLASTS ANY 3X3 AREA OF BOARD", COL_TEXT_DIM, 1);
+        } else {
+            draw_border(mx + 18, by, modal_w - 36, 34, 1, COL_BOARD_EDGE);
+            fill_rect(mx + 20, by + 2, modal_w - 40, 30, RGB(26, 20, 24));
+            char b_txt[64];
+            snprintf(b_txt, sizeof(b_txt), "[^] BOMB (%d COINS - NEED %d)", BOMB_COST, BOMB_COST - g->coins);
+            draw_str(mx + 28, by + 6, b_txt, COL_TEXT_DIM, 1);
+            draw_str(mx + 28, by + 20, "BLASTS 3X3 SECTION OF BOARD", COL_TEXT_DIM, 1);
+        }
+
+        /* Option 3: Give Up */
         u32 dim_pulse = ((g->anim_tick / 15) % 2) ? COL_TEXT_WHITE : COL_TEXT_DIM;
         draw_str(mx + 60, my + 144, "[O] OR [START] GIVE UP", dim_pulse, 1);
     }
@@ -1585,6 +1594,13 @@ static void process_input(Game *g) {
             if (g->coins >= get_revive_cost(g)) {
                 execute_revive(g);
             }
+        } else if (is_button_tapped(PSP_CTRL_TRIANGLE)) {
+            if (g->hammer_charges > 0 || g->coins >= BOMB_COST) {
+                g->revive_modal = 0;
+                g->hammer_mode = 1;
+                clamp_cursor(g);
+                play_sound(snd_snap, SND_SNAP_SAMPLES);
+            }
         } else if (is_button_tapped(PSP_CTRL_CIRCLE) || is_button_tapped(PSP_CTRL_START)) {
             g->revive_modal = 0;
             g->game_over = 1;
@@ -1639,7 +1655,7 @@ static void process_input(Game *g) {
 
     if (is_button_tapped(PSP_CTRL_TRIANGLE)) {
         if (!g->hammer_mode) {
-            if (g->hammer_charges > 0 || g->coins >= 20) {
+            if (g->hammer_charges > 0 || g->coins >= BOMB_COST) {
                 g->hammer_mode = 1;
                 clamp_cursor(g);
                 play_sound(snd_snap, SND_SNAP_SAMPLES);

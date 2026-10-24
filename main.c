@@ -1171,17 +1171,20 @@ static void render_overlays(const Game *g) {
         }
 
         int len = (int)strlen(banner);
-        int cx = BOARD_X + (BOARD_TOTAL - len * 16) / 2;
-        int cy = BOARD_Y + BOARD_TOTAL - 22;
+        int text_scale = (len > 11) ? 1 : 2;
+        int banner_w = len * 8 * text_scale;
+        int cx = BOARD_X + (BOARD_TOTAL - banner_w) / 2;
+        int cy = BOARD_Y + BOARD_TOTAL - ((text_scale == 2) ? 22 : 18);
+        int pill_h = (text_scale == 2) ? 24 : 16;
 
         /* Glowing backdrop badge pill */
-        fill_rect(cx - 8, cy - 4, len * 16 + 16, 24, RGB(10, 16, 44));
-        draw_border(cx - 8, cy - 4, len * 16 + 16, 24, 2, RGB(255, 140, 20));
+        fill_rect(cx - 8, cy - 4, banner_w + 16, pill_h, RGB(10, 16, 44));
+        draw_border(cx - 8, cy - 4, banner_w + 16, pill_h, 2, RGB(255, 140, 20));
 
-        /* Fiery 2x banner text */
-        draw_str(cx + 1, cy + 1, banner, RGB(12, 16, 36), 2);
+        /* Fiery banner text */
+        draw_str(cx + 1, cy + 1, banner, RGB(12, 16, 36), text_scale);
         u32 txt_col = (g->streak_display > 2) ? RGB(255, 215, 30) : COL_TEXT_WHITE;
-        draw_str(cx, cy, banner, txt_col, 2);
+        draw_str(cx, cy, banner, txt_col, text_scale);
     }
 
     /* Score popup */

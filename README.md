@@ -2,6 +2,10 @@
 
 A lightweight, high-performance block-clearing puzzle game engineered specifically for the Sony PlayStation Portable (PSP). Built to run natively within the strict 32MB RAM constraints of original PSP-1000 hardware and modern emulators alike, **Brick Blast** delivers fluid 60 FPS gameplay, authentic audio scaling, and zero-latency input response.
 
+<p align="center">
+  <img src="screenshot.png" alt="Brick Blast PSP Gameplay" width="720"/>
+</p>
+
 ---
 
 ### Core Features

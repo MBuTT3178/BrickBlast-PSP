@@ -495,6 +495,8 @@ typedef struct {
     int coins;          /* Persistent player coins */
     int combo;          /* Lines cleared in current placement (multi-line) */
     int streak;         /* Consecutive turns with line clears */
+    int streak_moves_left; /* 0..3 moves remaining to keep streak alive */
+    int streak_lost_timer; /* Timer to flash streak lost alert */
     int cursor_r, cursor_c;
     int sel;
 
@@ -836,6 +838,9 @@ static void execute_revive(Game *g) {
     generate_pieces(g);
     g->sel = 0;
     clamp_cursor(g);
+    if (g->streak > 0) {
+        g->streak_moves_left = 3;
+    }
 
     play_sound(snd_clear, SND_CLEAR_SAMPLES);
 }
@@ -862,14 +867,22 @@ static void check_clears(Game *g) {
     }
 
     if (total_lines == 0) {
-        /* No lines cleared on this turn -> STREAK resets to 0 */
-        g->streak = 0;
+        /* No lines cleared on this turn -> Decrement 3-move streak grace counter */
         g->combo = 0;
+        if (g->streak > 0) {
+            g->streak_moves_left--;
+            if (g->streak_moves_left <= 0) {
+                g->streak = 0;
+                g->streak_moves_left = 0;
+                g->streak_lost_timer = 45;
+            }
+        }
         return;
     }
 
-    /* Consecutive turn with lines cleared -> STREAK increases! */
+    /* Turn with lines cleared -> STREAK increases & 3-move grace counter resets! */
     g->streak++;
+    g->streak_moves_left = 3;
     g->combo = total_lines;
 
     for (int r = 0; r < GRID_N; r++) {
@@ -1015,10 +1028,26 @@ static void render_header(const Game *g) {
     draw_str(58, 6, "BLAST", COL_CYAN_GLOW, 1);
 
     /* Left row 2: Active streak indicator or subtitle */
-    if (g->streak > 1) {
+    if (g->streak >= 1) {
         u32 flame = ((g->anim_tick / 6) % 2) ? RGB(255, 120, 20) : COL_TEXT_GOLD;
         draw_str(14, 20, "STREAK x", flame, 1);
         draw_int(78, 20, g->streak, RGB(255, 255, 255), 1);
+
+        /* 3 grace moves pips */
+        int pip_x = (g->streak >= 10) ? 104 : 96;
+        for (int p = 0; p < 3; p++) {
+            int px = pip_x + p * 8;
+            if (p < g->streak_moves_left) {
+                u32 pip_col = (g->streak_moves_left == 1) ? RGB(255, 60, 60) : RGB(255, 180, 40);
+                fill_rect(px, 22, 5, 5, pip_col);
+                draw_border(px, 22, 5, 5, 1, RGB(255, 255, 255));
+            } else {
+                fill_rect(px, 22, 5, 5, RGB(30, 36, 60));
+                draw_border(px, 22, 5, 5, 1, COL_BOARD_EDGE);
+            }
+        }
+    } else if (g->streak_lost_timer > 0) {
+        draw_str(14, 20, "STREAK LOST", COL_ALERT_RED, 1);
     } else {
         draw_str(14, 20, "PSP EDITION", COL_TEXT_DIM, 1);
     }
@@ -1403,6 +1432,7 @@ int main(void) {
             if (game.popup_timer > 0) game.popup_timer--;
             if (game.coin_popup_timer > 0) game.coin_popup_timer--;
             if (game.combo_timer > 0) game.combo_timer--;
+            if (game.streak_lost_timer > 0) game.streak_lost_timer--;
         } else {
             game.anim_tick++;
         }

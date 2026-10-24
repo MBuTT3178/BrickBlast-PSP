@@ -506,6 +506,16 @@ typedef struct {
         int used;
     } pieces[3];
 
+    struct {
+        int shape;
+        int color;
+        int active;
+    } hold;
+    int hold_locked;
+
+    int hammer_mode;
+    int hammer_charges;
+
     int game_over;
     int revive_modal;   /* 1 when Out of Moves & asking player to revive */
     int revive_count;   /* Number of revives used in current run */
@@ -618,21 +628,79 @@ static int shape_can_clear(const Game *g, int shape_idx) {
             if (!can_place(g, s, r, c)) continue;
             for (int i = 0; i < s->n; i++) {
                 int pr = r + s->c[i][1];
-                int pc = c + s->c[i][0];
                 int full_r = 1;
                 for (int cc = 0; cc < GRID_N; cc++) {
-                    if (cc != pc && g->grid[pr][cc] == 0) { full_r = 0; break; }
+                    if (g->grid[pr][cc] != 0) continue;
+                    int covered = 0;
+                    for (int j = 0; j < s->n; j++) {
+                        if (r + s->c[j][1] == pr && c + s->c[j][0] == cc) {
+                            covered = 1;
+                            break;
+                        }
+                    }
+                    if (!covered) { full_r = 0; break; }
                 }
                 if (full_r) return 1;
+
+                int pc = c + s->c[i][0];
                 int full_c = 1;
                 for (int rr = 0; rr < GRID_N; rr++) {
-                    if (rr != pr && g->grid[rr][pc] == 0) { full_c = 0; break; }
+                    if (g->grid[rr][pc] != 0) continue;
+                    int covered = 0;
+                    for (int j = 0; j < s->n; j++) {
+                        if (r + s->c[j][1] == rr && c + s->c[j][0] == pc) {
+                            covered = 1;
+                            break;
+                        }
+                    }
+                    if (!covered) { full_c = 0; break; }
                 }
                 if (full_c) return 1;
             }
         }
     }
     return 0;
+}
+
+static void get_clears_preview(const Game *g, int *out_rows, int *out_cols, int *num_lines) {
+    for (int i = 0; i < GRID_N; i++) { out_rows[i] = 0; out_cols[i] = 0; }
+    *num_lines = 0;
+    if (g->pieces[g->sel].used || g->game_over || g->revive_modal || g->hammer_mode) return;
+
+    const Shape *s = &shapes[g->pieces[g->sel].shape];
+    if (!can_place(g, s, g->cursor_r, g->cursor_c)) return;
+
+    for (int r = 0; r < GRID_N; r++) {
+        int full = 1;
+        for (int c = 0; c < GRID_N; c++) {
+            if (g->grid[r][c] != 0) continue;
+            int covered = 0;
+            for (int j = 0; j < s->n; j++) {
+                if (g->cursor_r + s->c[j][1] == r && g->cursor_c + s->c[j][0] == c) {
+                    covered = 1;
+                    break;
+                }
+            }
+            if (!covered) { full = 0; break; }
+        }
+        if (full) { out_rows[r] = 1; (*num_lines)++; }
+    }
+
+    for (int c = 0; c < GRID_N; c++) {
+        int full = 1;
+        for (int r = 0; r < GRID_N; r++) {
+            if (g->grid[r][c] != 0) continue;
+            int covered = 0;
+            for (int j = 0; j < s->n; j++) {
+                if (g->cursor_r + s->c[j][1] == r && g->cursor_c + s->c[j][0] == c) {
+                    covered = 1;
+                    break;
+                }
+            }
+            if (!covered) { full = 0; break; }
+        }
+        if (full) { out_cols[c] = 1; (*num_lines)++; }
+    }
 }
 
 /* Canonical Block Blast Color Assignment */
@@ -665,8 +733,8 @@ static void generate_pieces(Game *g) {
         }
     }
 
-    int is_tight    = (occupied >= 34); /* > 53% full */
-    int is_crowded  = (occupied >= 44); /* > 68% full: emergency pity assist */
+    int is_tight    = (occupied >= 26); /* > 40% full */
+    int is_crowded  = (occupied >= 36); /* > 56% full: emergency pity assist */
 
     /* Tier pools */
     static const int small_pool[] = {0, 1, 2, 3, 4, 13, 14, 15, 16};
@@ -687,8 +755,8 @@ static void generate_pieces(Game *g) {
         }
     }
 
-    if (n_clear > 0 && rng_range(100) < 75) {
-        /* 75% chance to hand the player a piece that will complete their setup! */
+    if (n_clear > 0 && rng_range(100) < 85) {
+        /* 85% chance to hand the player a piece that will complete their setup! */
         s0 = clear_candidates[rng_range(n_clear)];
     } else {
         for (int tries = 0; tries < 25; tries++) {
@@ -715,14 +783,14 @@ static void generate_pieces(Game *g) {
             break;
         }
     }
-    if (s1 == -1) s1 = med_pool[rng_range(n_med)];
+    if (s1 == -1) s1 = small_pool[rng_range(n_small)];
 
     /* Slot 2: Situational (Large when board is open, banned when crowded) */
     int s2 = -1;
     if (is_crowded) {
         /* High density: strictly ban large chunks, pick whatever fits */
         for (int tries = 0; tries < 25; tries++) {
-            int candidate = (rng_range(100) < 50) ? small_pool[rng_range(n_small)] : med_pool[rng_range(n_med)];
+            int candidate = small_pool[rng_range(n_small)];
             if (shape_can_fit(g, candidate) && candidate != s0 && candidate != s1) {
                 s2 = candidate;
                 break;
@@ -732,7 +800,7 @@ static void generate_pieces(Game *g) {
     } else if (is_tight) {
         /* Moderate density: ban 3x3 and 5-lines */
         for (int tries = 0; tries < 25; tries++) {
-            int candidate = med_pool[rng_range(n_med)];
+            int candidate = (rng_range(100) < 50) ? small_pool[rng_range(n_small)] : med_pool[rng_range(n_med)];
             if (shape_can_fit(g, candidate)) {
                 s2 = candidate;
                 break;
@@ -740,8 +808,8 @@ static void generate_pieces(Game *g) {
         }
         if (s2 == -1) s2 = small_pool[rng_range(n_small)];
     } else {
-        /* Open board: 60% chance for large chunk */
-        if (rng_range(100) < 60) {
+        /* Open board: 40% chance for large chunk */
+        if (rng_range(100) < 40) {
             s2 = large_pool[rng_range(n_large)];
         } else {
             s2 = med_pool[rng_range(n_med)];
@@ -753,22 +821,14 @@ static void generate_pieces(Game *g) {
     g->pieces[2].shape = s2;
 
     /* ─── SOLVABILITY / ANTI-LOCKOUT GUARANTEE ─── */
-    /* Ensure that at least ONE piece in the trio can be placed */
-    int any_fits = 0;
+    /* Ensure that every single piece in the trio can be placed */
     for (int i = 0; i < 3; i++) {
-        if (shape_can_fit(g, g->pieces[i].shape)) {
-            any_fits = 1;
-            break;
-        }
-    }
-
-    if (!any_fits) {
-        /* Find any shape that can fit and place it into Slot 0 */
-        for (int s = 0; s < NUM_SHAPES; s++) {
-            if (shape_can_fit(g, s)) {
-                g->pieces[0].shape = s;
-                any_fits = 1;
-                break;
+        if (!shape_can_fit(g, g->pieces[i].shape)) {
+            for (int s = 0; s < n_small; s++) {
+                if (shape_can_fit(g, small_pool[s])) {
+                    g->pieces[i].shape = small_pool[s];
+                    break;
+                }
             }
         }
     }
@@ -790,10 +850,28 @@ static int any_piece_fits(const Game *g) {
             }
         }
     }
+    if (g->hold.active && !g->hold_locked) {
+        const Shape *s = &shapes[g->hold.shape];
+        for (int r = 0; r <= GRID_N - s->h; r++) {
+            for (int c = 0; c <= GRID_N - s->w; c++) {
+                if (can_place(g, s, r, c)) return 1;
+            }
+        }
+    }
+    if (g->hammer_charges > 0 || g->coins >= 20) {
+        return 1;
+    }
     return 0;
 }
 
 static void clamp_cursor(Game *g) {
+    if (g->hammer_mode) {
+        if (g->cursor_r < 0) g->cursor_r = 0;
+        if (g->cursor_r >= GRID_N) g->cursor_r = GRID_N - 1;
+        if (g->cursor_c < 0) g->cursor_c = 0;
+        if (g->cursor_c >= GRID_N) g->cursor_c = GRID_N - 1;
+        return;
+    }
     if (g->pieces[g->sel].used) return;
     const Shape *s = &shapes[g->pieces[g->sel].shape];
     if (g->cursor_r > GRID_N - s->h) g->cursor_r = GRID_N - s->h;
@@ -810,6 +888,7 @@ static void game_init(Game *g) {
     g->high_score = best;
     g->cursor_r = 3;
     g->cursor_c = 3;
+    g->hammer_charges = 1;
     generate_pieces(g);
     clamp_cursor(g);
 }
@@ -895,12 +974,16 @@ static void check_clears(Game *g) {
     g->flash_timer = 14;
 
     /* Score calculation: Base + Multi-line clear + Streak multiplier */
+    int old_score = g->score;
     int base_pts = total_lines * 100;
     int multi_pts = (total_lines > 1) ? ((total_lines - 1) * 150) : 0;
     int streak_pts = (g->streak > 1) ? (g->streak * 60) : 0;
     int total_pts = base_pts + multi_pts + streak_pts;
 
     g->score += total_pts;
+    if ((g->score / 400) > (old_score / 400)) {
+        g->hammer_charges++;
+    }
     g->popup_val = total_pts;
     g->popup_timer = 45;
 
@@ -958,8 +1041,13 @@ static void place_selected_piece(Game *g) {
         g->grid[r][c] = col_idx;
     }
 
+    int old_score = g->score;
     g->score += s->n * 10;
+    if ((g->score / 400) > (old_score / 400)) {
+        g->hammer_charges++;
+    }
     g->pieces[g->sel].used = 1;
+    g->hold_locked = 0;
 
     /* Play authentic wooden block place thump */
     play_sound(snd_place, SND_PLACE_SAMPLES);
@@ -996,6 +1084,70 @@ static void cycle_selection(Game *g, int dir) {
             return;
         }
     }
+}
+
+static void hold_selected_piece(Game *g) {
+    if (g->game_over || g->revive_modal || g->hammer_mode) return;
+    if (g->pieces[g->sel].used || g->hold_locked) return;
+
+    if (!g->hold.active) {
+        g->hold.shape  = g->pieces[g->sel].shape;
+        g->hold.color  = g->pieces[g->sel].color;
+        g->hold.active = 1;
+        g->pieces[g->sel].used = 1;
+
+        int all_used = 1;
+        for (int i = 0; i < 3; i++) {
+            if (!g->pieces[i].used) { all_used = 0; break; }
+        }
+        if (all_used) {
+            generate_pieces(g);
+        } else {
+            cycle_selection(g, 1);
+        }
+    } else {
+        int temp_shape = g->pieces[g->sel].shape;
+        int temp_color = g->pieces[g->sel].color;
+
+        g->pieces[g->sel].shape = g->hold.shape;
+        g->pieces[g->sel].color = g->hold.color;
+
+        g->hold.shape = temp_shape;
+        g->hold.color = temp_color;
+    }
+
+    g->hold_locked = 1;
+    clamp_cursor(g);
+    play_sound(snd_snap, SND_SNAP_SAMPLES);
+}
+
+static void execute_hammer_blast(Game *g) {
+    if (g->hammer_charges > 0) {
+        g->hammer_charges--;
+    } else if (g->coins >= 20) {
+        g->coins -= 20;
+        save_data.coins = g->coins;
+        save_game_data();
+    } else {
+        play_sound(snd_gameover, SND_GAMEOVER_SAMPLES);
+        g->hammer_mode = 0;
+        return;
+    }
+
+    for (int dr = -1; dr <= 1; dr++) {
+        for (int dc = -1; dc <= 1; dc++) {
+            int r = g->cursor_r + dr;
+            int c = g->cursor_c + dc;
+            if (r >= 0 && r < GRID_N && c >= 0 && c < GRID_N) {
+                g->grid[r][c] = 0;
+                g->flash[r][c] = 1;
+            }
+        }
+    }
+    g->flash_timer = 18;
+    g->hammer_mode = 0;
+    clamp_cursor(g);
+    play_sound(snd_clear, SND_CLEAR_SAMPLES);
 }
 
 /* ─── RENDERING ──────────────────────────────────────────────────────── */
@@ -1082,10 +1234,50 @@ static void render_grid(const Game *g) {
             }
         }
     }
+
+    /* Glowing clear preview lines */
+    int prev_rows[GRID_N];
+    int prev_cols[GRID_N];
+    int num_clears = 0;
+    get_clears_preview(g, prev_rows, prev_cols, &num_clears);
+
+    if (num_clears > 0) {
+        u32 glow_col = ((g->anim_tick / 4) % 2) ? RGB(255, 235, 70) : RGB(60, 240, 255);
+        for (int r = 0; r < GRID_N; r++) {
+            if (prev_rows[r]) {
+                int ry = BOARD_Y + BOARD_BORDER + r * (CELL_SZ + CELL_GAP);
+                draw_border(BOARD_X + BOARD_BORDER - 1, ry - 1, GRID_INNER + 2, CELL_SZ + 2, 2, glow_col);
+            }
+        }
+        for (int c = 0; c < GRID_N; c++) {
+            if (prev_cols[c]) {
+                int cx = BOARD_X + BOARD_BORDER + c * (CELL_SZ + CELL_GAP);
+                draw_border(cx - 1, BOARD_Y + BOARD_BORDER - 1, CELL_SZ + 2, GRID_INNER + 2, 2, glow_col);
+            }
+        }
+    }
 }
 
 static void render_preview(const Game *g) {
-    if (g->game_over || g->pieces[g->sel].used) return;
+    if (g->game_over || g->revive_modal) return;
+
+    if (g->hammer_mode) {
+        u32 blast_col = ((g->anim_tick / 6) % 2) ? RGB(255, 60, 60) : RGB(255, 220, 40);
+        for (int dr = -1; dr <= 1; dr++) {
+            for (int dc = -1; dc <= 1; dc++) {
+                int r = g->cursor_r + dr;
+                int c = g->cursor_c + dc;
+                if (r >= 0 && r < GRID_N && c >= 0 && c < GRID_N) {
+                    int cx = BOARD_X + BOARD_BORDER + c * (CELL_SZ + CELL_GAP);
+                    int cy = BOARD_Y + BOARD_BORDER + r * (CELL_SZ + CELL_GAP);
+                    draw_border(cx, cy, CELL_SZ, CELL_SZ, 2, blast_col);
+                }
+            }
+        }
+        return;
+    }
+
+    if (g->pieces[g->sel].used) return;
 
     const Shape *s = &shapes[g->pieces[g->sel].shape];
     int valid = can_place(g, s, g->cursor_r, g->cursor_c);
@@ -1109,16 +1301,16 @@ static void render_panel(const Game *g) {
     fill_rect(PANEL_X + 2, PANEL_Y + 2, PANEL_W - 4, PANEL_H - 4, COL_BOARD_CARD);
 
     int slot_w = PANEL_W - 16;
-    int slot_h = 48;
+    int slot_h = 36;
     int slot_x = PANEL_X + 8;
-    int mini_cell = 11;
+    int mini_cell = 9;
 
     for (int i = 0; i < 3; i++) {
-        int slot_y = PANEL_Y + 10 + i * 55;
+        int slot_y = PANEL_Y + 8 + i * 42;
 
         fill_rect(slot_x, slot_y, slot_w, slot_h, COL_TRAY_BG);
 
-        if (i == g->sel && !g->pieces[i].used) {
+        if (i == g->sel && !g->pieces[i].used && !g->hammer_mode) {
             u32 glow = ((g->anim_tick / 8) % 2) ? RGB(255, 255, 255) : COL_CYAN_GLOW;
             draw_border(slot_x - 1, slot_y - 1, slot_w + 2, slot_h + 2, 2, glow);
         } else {
@@ -1132,7 +1324,7 @@ static void render_panel(const Game *g) {
 
         const Shape *sh = &shapes[g->pieces[i].shape];
         u32 col = piece_colors[g->pieces[i].color];
-        if (i != g->sel) col = col_darken(col, 65);
+        if (i != g->sel || g->hammer_mode) col = col_darken(col, 65);
 
         int pw = sh->w * (mini_cell + 1);
         int ph = sh->h * (mini_cell + 1);
@@ -1146,10 +1338,60 @@ static void render_panel(const Game *g) {
         }
     }
 
+    /* Power Tools Row: HOLD and BOMB */
+    int tool_y = PANEL_Y + 138;
+    int tool_w = (slot_w - 6) / 2;
+    int tool_h = 42;
+
+    /* HOLD Slot [SQ] */
+    int hold_x = slot_x;
+    fill_rect(hold_x, tool_y, tool_w, tool_h, COL_TRAY_BG);
+    u32 hold_border = g->hold_locked ? COL_BOARD_EDGE : COL_CYAN_GLOW;
+    draw_border(hold_x, tool_y, tool_w, tool_h, 1, hold_border);
+    draw_str(hold_x + 6, tool_y + 3, "[SQ] HOLD", g->hold_locked ? COL_TEXT_DIM : COL_TEXT_WHITE, 1);
+
+    if (g->hold.active) {
+        const Shape *sh = &shapes[g->hold.shape];
+        u32 col = piece_colors[g->hold.color];
+        if (g->hold_locked) col = col_darken(col, 60);
+
+        int pw = sh->w * (mini_cell + 1);
+        int ph = sh->h * (mini_cell + 1);
+        int ox = hold_x + (tool_w - pw) / 2;
+        int oy = tool_y + 14 + (24 - ph) / 2;
+
+        for (int j = 0; j < sh->n; j++) {
+            int bx = ox + sh->c[j][0] * (mini_cell + 1);
+            int by = oy + sh->c[j][1] * (mini_cell + 1);
+            draw_gem_block(bx, by, mini_cell, col);
+        }
+    } else {
+        draw_str(hold_x + 28, tool_y + 20, "EMPTY", COL_TEXT_DIM, 1);
+    }
+
+    /* BOMB Slot [TRI] */
+    int bomb_x = slot_x + tool_w + 6;
+    fill_rect(bomb_x, tool_y, tool_w, tool_h, COL_TRAY_BG);
+    if (g->hammer_mode) {
+        u32 bflash = ((g->anim_tick / 6) % 2) ? RGB(255, 60, 60) : RGB(255, 220, 40);
+        draw_border(bomb_x - 1, tool_y - 1, tool_w + 2, tool_h + 2, 2, bflash);
+    } else {
+        draw_border(bomb_x, tool_y, tool_w, tool_h, 1, COL_TEXT_GOLD);
+    }
+    draw_str(bomb_x + 6, tool_y + 3, "[^] BOMB", g->hammer_mode ? RGB(255, 80, 80) : COL_TEXT_GOLD, 1);
+
+    if (g->hammer_charges > 0) {
+        char chg_buf[32];
+        snprintf(chg_buf, sizeof(chg_buf), "FREE x%d", g->hammer_charges);
+        draw_str(bomb_x + 18, tool_y + 20, chg_buf, RGB(80, 255, 120), 1);
+    } else {
+        draw_str(bomb_x + 14, tool_y + 20, "20 COINS", (g->coins >= 20) ? COL_TEXT_GOLD : COL_ALERT_RED, 1);
+    }
+
     /* Helper hints */
-    fill_rect(PANEL_X + 8, PANEL_Y + 180, PANEL_W - 16, 1, COL_BOARD_EDGE);
-    draw_str(PANEL_X + 12, PANEL_Y + 188, "D-PAD: MOVE", COL_TEXT_DIM, 1);
-    draw_str(PANEL_X + 12, PANEL_Y + 202, "L/R: SELECT  X: DROP", COL_TEXT_WHITE, 1);
+    fill_rect(PANEL_X + 8, PANEL_Y + 186, PANEL_W - 16, 1, COL_BOARD_EDGE);
+    draw_str(PANEL_X + 12, PANEL_Y + 192, "D-PAD: MOVE   L/R: SELECT", COL_TEXT_DIM, 1);
+    draw_str(PANEL_X + 12, PANEL_Y + 205, "[X]: DROP   [SQ]: HOLD", COL_TEXT_WHITE, 1);
 }
 
 static void render_overlays(const Game *g) {
@@ -1384,11 +1626,50 @@ static void process_input(Game *g) {
         clamp_cursor(g);
     }
 
-    if (is_button_tapped(PSP_CTRL_LTRIGGER)) cycle_selection(g, -1);
-    if (is_button_tapped(PSP_CTRL_RTRIGGER)) cycle_selection(g, 1);
-    if (is_button_tapped(PSP_CTRL_CIRCLE))   cycle_selection(g, 1); /* Return piece to deck / next piece */
+    if (is_button_tapped(PSP_CTRL_LTRIGGER)) {
+        if (!g->hammer_mode) cycle_selection(g, -1);
+    }
+    if (is_button_tapped(PSP_CTRL_RTRIGGER)) {
+        if (!g->hammer_mode) cycle_selection(g, 1);
+    }
 
-    if (is_button_tapped(PSP_CTRL_CROSS)) place_selected_piece(g);
+    if (is_button_tapped(PSP_CTRL_SQUARE)) {
+        hold_selected_piece(g);
+    }
+
+    if (is_button_tapped(PSP_CTRL_TRIANGLE)) {
+        if (!g->hammer_mode) {
+            if (g->hammer_charges > 0 || g->coins >= 20) {
+                g->hammer_mode = 1;
+                clamp_cursor(g);
+                play_sound(snd_snap, SND_SNAP_SAMPLES);
+            } else {
+                play_sound(snd_gameover, SND_GAMEOVER_SAMPLES);
+            }
+        } else {
+            g->hammer_mode = 0;
+            clamp_cursor(g);
+            play_sound(snd_snap, SND_SNAP_SAMPLES);
+        }
+    }
+
+    if (is_button_tapped(PSP_CTRL_CIRCLE)) {
+        if (g->hammer_mode) {
+            g->hammer_mode = 0;
+            clamp_cursor(g);
+            play_sound(snd_snap, SND_SNAP_SAMPLES);
+        } else {
+            cycle_selection(g, 1);
+        }
+    }
+
+    if (is_button_tapped(PSP_CTRL_CROSS)) {
+        if (g->hammer_mode) {
+            execute_hammer_blast(g);
+        } else {
+            place_selected_piece(g);
+        }
+    }
 }
 
 /* ─── MAIN ───────────────────────────────────────────────────────────── */
